@@ -1,10 +1,7 @@
 {
-  "$schema": "https://railway.app/schema.json",
-  "build": {
-    "builder": "nixpacks"
-  },
+  "$schema": "https://railway.com/railway.schema.json",
   "deploy": {
-    "startCommand": "npm run build && npm start",
+    "startCommand": "node server/index.js",
     "restartPolicyType": "always",
     "restartPolicyMaxRetries": 10
   }
