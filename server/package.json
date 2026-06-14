@@ -1,0 +1,18 @@
+{
+  "name": "time-keeping-server",
+  "version": "0.1.0",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "node index.js"
+  },
+  "dependencies": {
+    "bcryptjs": "2.4.3",
+    "cors": "2.8.5",
+    "dotenv": "16.3.1",
+    "es-object-atoms": "^1.1.2",
+    "express": "4.18.2",
+    "jsonwebtoken": "9.0.2",
+    "mysql2": "^3.6.0"
+  }
+}
