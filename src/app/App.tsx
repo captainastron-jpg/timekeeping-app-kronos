@@ -3,9 +3,10 @@ import { Clock, Coffee, RotateCcw, LogOut as LogOutIcon, FileText, UserPlus, Use
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
-const API_BASE = import.meta.env.VITE_API_BASE ?? (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : 'https://your-backend-url.up.railway.app/api');
+const API_BASE = import.meta.env.VITE_API_BASE ?? (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : `${window.location.origin}/api`);
+
 if (window.location.hostname !== 'localhost' && !import.meta.env.VITE_API_BASE) {
-  console.warn('Warning: VITE_API_BASE not set for production. Update the API_BASE constant or set the environment variable.');
+  console.warn('Warning: VITE_API_BASE is not set. For a separate backend deployment, set VITE_API_BASE to your backend API URL.');
 }
 
 type LogEntry = {
