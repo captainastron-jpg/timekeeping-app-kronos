@@ -3,7 +3,7 @@ import { Clock, Coffee, RotateCcw, LogOut as LogOutIcon, FileText, UserPlus, Use
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
-const API_BASE = 'http://localhost:4000/api';
+const API_BASE = import.meta.env.VITE_API_BASE ?? (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : '/api');
 
 type LogEntry = {
   id: string;
