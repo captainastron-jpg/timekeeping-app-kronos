@@ -32,6 +32,14 @@ async function ensureDatabase() {
   await conn.end();
 }
 
+async function columnExists(table, column) {
+  const [rows] = await pool.query(
+    `SELECT COUNT(*) AS count FROM information_schema.columns WHERE table_schema = ? AND table_name = ? AND column_name = ?`,
+    [MYSQL_DATABASE, table, column]
+  );
+  return rows[0].count > 0;
+}
+
 async function ensureTables() {
   await pool.query(`
     CREATE TABLE IF NOT EXISTS users (
@@ -66,10 +74,18 @@ async function ensureTables() {
     )
   `);
 
-  await pool.query('ALTER TABLE users ADD COLUMN IF NOT EXISTS access_code VARCHAR(6) UNIQUE');
-  await pool.query("ALTER TABLE users ADD COLUMN IF NOT EXISTS role VARCHAR(20) NOT NULL DEFAULT 'user'");
-  await pool.query('ALTER TABLE users MODIFY COLUMN password VARCHAR(255) DEFAULT NULL');
-  await pool.query('ALTER TABLE users MODIFY COLUMN email VARCHAR(255) NULL');
+  if (!(await columnExists('users', 'access_code'))) {
+    await pool.query('ALTER TABLE users ADD COLUMN access_code VARCHAR(6) UNIQUE');
+  }
+  if (!(await columnExists('users', 'role'))) {
+    await pool.query("ALTER TABLE users ADD COLUMN role VARCHAR(20) NOT NULL DEFAULT 'user'");
+  }
+  if (await columnExists('users', 'password')) {
+    await pool.query('ALTER TABLE users MODIFY COLUMN password VARCHAR(255) DEFAULT NULL');
+  }
+  if (await columnExists('users', 'email')) {
+    await pool.query('ALTER TABLE users MODIFY COLUMN email VARCHAR(255) NULL');
+  }
 }
 
 async function ensureDefaultUsers() {
