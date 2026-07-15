@@ -3,6 +3,16 @@ import { Clock, Coffee, RotateCcw, LogOut as LogOutIcon, FileText, UserPlus, Use
 import jsPDF from 'jspdf';
 import autoTable from 'jspdf-autotable';
 
+declare global {
+  interface ImportMetaEnv {
+    readonly VITE_API_BASE?: string;
+  }
+
+  interface ImportMeta {
+    readonly env: ImportMetaEnv;
+  }
+}
+
 const API_BASE = import.meta.env.VITE_API_BASE ?? (window.location.hostname === 'localhost' ? 'http://localhost:4000/api' : `${window.location.origin}/api`);
 
 if (window.location.hostname !== 'localhost' && !import.meta.env.VITE_API_BASE) {
@@ -44,6 +54,8 @@ export default function App() {
     { id: '5', name: 'Mike Johnson', accessCode: '901234', role: 'user' },
   ]);
   const [currentUser, setCurrentUser] = useState<UserType | null>(null);
+  const [token, setToken] = useState<string | null>(null);
+  const [isAuthLoading, setIsAuthLoading] = useState(true);
   const [logs, setLogs] = useState<LogEntry[]>([]);
   const [showAddUser, setShowAddUser] = useState(false);
   const [showManageUsers, setShowManageUsers] = useState(false);
@@ -73,7 +85,7 @@ export default function App() {
         const usersRes = await fetch(`${API_BASE}/manage/users`);
         if (usersRes.ok) {
           const usersData = await usersRes.json();
-          setUsers(usersData);
+          setUsers(usersData.map((user: any) => normalizeUser(user)));
         }
       } catch (err) {
         console.error('Failed to load users:', err);
@@ -95,6 +107,23 @@ export default function App() {
       } catch (err) {
         console.error('Failed to load schedule:', err);
       }
+
+      const persistedToken = localStorage.getItem('tk_token');
+      const persistedUser = localStorage.getItem('tk_user');
+      if (persistedToken && persistedUser) {
+        try {
+          const parsedUser = normalizeUser(JSON.parse(persistedUser));
+          setToken(persistedToken);
+          setCurrentUser(parsedUser);
+          await loadLogs(persistedToken, parsedUser.id);
+        } catch (err) {
+          console.error('Failed to restore auth state:', err);
+          localStorage.removeItem('tk_token');
+          localStorage.removeItem('tk_user');
+        }
+      }
+
+      setIsAuthLoading(false);
     };
 
     loadData();
@@ -116,27 +145,116 @@ export default function App() {
     }
   };
 
-  const handleLogin = () => {
-    const user = users.find(u => u.accessCode === accessCodeInput);
-    if (user) {
-      setCurrentUser(user);
+  const getAuthHeaders = () => {
+    const headers: Record<string, string> = {};
+    if (token) {
+      headers.Authorization = `Bearer ${token}`;
+    }
+    return headers;
+  };
+
+  const normalizeUser = (user: any): UserType => ({
+    id: String(user.id),
+    name: user.name ?? user.username ?? '',
+    accessCode: String(user.accessCode ?? user.access_code ?? ''),
+    role: user.role ?? 'user',
+  });
+
+  const determineUserState = (userId: string, logList: LogEntry[]): UserState => {
+    const userLogs = logList
+      .filter(log => log.userId === userId)
+      .sort((a, b) => b.timestamp.getTime() - a.timestamp.getTime());
+
+    if (userLogs.length === 0) return 'logged_out';
+
+    const lastType = userLogs[0].type;
+    if (lastType === 'Break') return 'on_break';
+    if (lastType === 'Time In' || lastType === 'Return') return 'logged_in';
+    return 'logged_out';
+  };
+
+  const loadLogs = async (authToken: string, currentUserId?: string) => {
+    if (!authToken) return;
+
+    try {
+      const headers: Record<string, string> = {
+        Authorization: `Bearer ${authToken}`,
+      };
+      const logsRes = await fetch(`${API_BASE}/time-entries`, { headers });
+      if (!logsRes.ok) {
+        const errorData = await logsRes.json().catch(() => null);
+        console.error('Failed to load logs:', errorData || logsRes.statusText);
+        return;
+      }
+
+      const logRows = await logsRes.json();
+      const normalizedLogs = logRows.map((row: any) => ({
+        id: String(row.id),
+        userId: String(row.user_id),
+        userName: row.userName || row.username || '',
+        type: row.event_type,
+        timestamp: new Date(row.timestamp),
+      }));
+
+      setLogs(normalizedLogs);
+      if (currentUserId) {
+        setUserStates(prev => ({
+          ...prev,
+          [currentUserId]: determineUserState(currentUserId, normalizedLogs),
+        }));
+      }
+    } catch (err) {
+      console.error('Failed to load logs:', err);
+    }
+  };
+
+  const handleLogin = async () => {
+    if (!validateAccessCode(accessCodeInput)) {
+      setLoginError('Invalid access code. Please enter 6 numeric digits.');
+      return;
+    }
+
+    try {
+      const authHeaders: Record<string, string> = { 'Content-Type': 'application/json' };
+      const res = await fetch(`${API_BASE}/auth/login`, {
+        method: 'POST',
+        headers: authHeaders,
+        body: JSON.stringify({ accessCode: accessCodeInput.trim() }),
+      });
+
+      const data = await res.json();
+      if (!res.ok) {
+        setLoginError(data?.error || 'Unable to login.');
+        setAccessCodeInput('');
+        return;
+      }
+
+      const normalizedUser = normalizeUser(data.user);
+      setCurrentUser(normalizedUser);
+      setToken(data.token);
+      localStorage.setItem('tk_token', data.token);
+      localStorage.setItem('tk_user', JSON.stringify(normalizedUser));
       setAccessCodeInput('');
       setLoginError('');
-    } else {
-      setLoginError('Invalid access code. Please try again.');
-      setAccessCodeInput('');
+      await loadLogs(data.token, normalizedUser.id);
+    } catch (err) {
+      console.error('Login failed:', err);
+      setLoginError('Unable to login. Please try again.');
     }
   };
 
   const handleLogout = () => {
-    // Don't reset user state - it persists across login sessions
     setCurrentUser(null);
+    setToken(null);
+    localStorage.removeItem('tk_token');
+    localStorage.removeItem('tk_user');
     setAccessCodeInput('');
     setLoginError('');
     setShowManageUsers(false);
     setShowAddUser(false);
     setEditingUser(null);
     setShowWorkSchedule(false);
+    setLogs([]);
   };
 
   const toggleWorkDay = (day: number) => {
@@ -148,7 +266,7 @@ export default function App() {
     saveWorkScheduleToDb(updatedSchedule);
   };
 
-  const addHoliday = () => {
+  const addHoliday = async () => {
     if (!newHolidayDate || !newHolidayName.trim()) {
       alert('Please enter both date and holiday name.');
       return;
@@ -159,38 +277,67 @@ export default function App() {
       return;
     }
 
-    const updatedWorkingHolidays = newHolidayIsWorking
-      ? [...workSchedule.workingHolidays, newHolidayDate].sort()
-      : workSchedule.workingHolidays;
+    try {
+      const res = await fetch(`${API_BASE}/work-schedule/holidays`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          holiday_date: newHolidayDate,
+          holiday_name: newHolidayName.trim(),
+          is_working: newHolidayIsWorking,
+        }),
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err?.error || 'Unable to add holiday');
+      }
 
-    const updatedSchedule: WorkSchedule = {
-      ...workSchedule,
-      holidays: [...workSchedule.holidays, newHolidayDate].sort(),
-      workingHolidays: updatedWorkingHolidays,
-      holidayNames: {
-        ...workSchedule.holidayNames,
-        [newHolidayDate]: newHolidayName.trim(),
-      },
-    };
+      const saved = await res.json();
+      const updatedSchedule: WorkSchedule = {
+        ...workSchedule,
+        holidays: [...workSchedule.holidays, newHolidayDate].sort(),
+        workingHolidays: newHolidayIsWorking
+          ? [...workSchedule.workingHolidays, newHolidayDate].sort()
+          : workSchedule.workingHolidays,
+        holidayNames: {
+          ...workSchedule.holidayNames,
+          [newHolidayDate]: newHolidayName.trim(),
+        },
+      };
 
-    setWorkSchedule(updatedSchedule);
-    setNewHolidayDate('');
-    setNewHolidayName('');
-    setNewHolidayIsWorking(false);
-    saveWorkScheduleToDb(updatedSchedule);
+      setWorkSchedule(updatedSchedule);
+      setNewHolidayDate('');
+      setNewHolidayName('');
+      setNewHolidayIsWorking(false);
+    } catch (err) {
+      console.error('Unable to add holiday:', err);
+      alert('Unable to add holiday. Please try again.');
+    }
   };
 
-  const removeHoliday = (date: string) => {
-    const updatedSchedule: WorkSchedule = {
-      ...workSchedule,
-      holidays: workSchedule.holidays.filter(h => h !== date),
-      workingHolidays: workSchedule.workingHolidays.filter(h => h !== date),
-      holidayNames: Object.fromEntries(
-        Object.entries(workSchedule.holidayNames).filter(([key]) => key !== date)
-      ),
-    };
-    setWorkSchedule(updatedSchedule);
-    saveWorkScheduleToDb(updatedSchedule);
+  const removeHoliday = async (date: string) => {
+    try {
+      const res = await fetch(`${API_BASE}/work-schedule/holidays/${date}`, {
+        method: 'DELETE',
+      });
+      if (!res.ok) {
+        const err = await res.json();
+        throw new Error(err?.error || 'Unable to remove holiday');
+      }
+
+      const updatedSchedule: WorkSchedule = {
+        ...workSchedule,
+        holidays: workSchedule.holidays.filter(h => h !== date),
+        workingHolidays: workSchedule.workingHolidays.filter(h => h !== date),
+        holidayNames: Object.fromEntries(
+          Object.entries(workSchedule.holidayNames).filter(([key]) => key !== date)
+        ),
+      };
+      setWorkSchedule(updatedSchedule);
+    } catch (err) {
+      console.error('Unable to remove holiday:', err);
+      alert('Unable to remove holiday. Please try again.');
+    }
   };
 
   const isWorkingDay = (date: Date): boolean => {
@@ -214,35 +361,62 @@ export default function App() {
     return userStates[currentUser.id] || 'logged_out';
   };
 
-  const addLog = (type: LogEntry['type']) => {
-    if (!currentUser) return;
+  const addLog = async (type: LogEntry['type']) => {
+    if (!currentUser || !token) return;
 
-    const newEntry: LogEntry = {
-      id: Date.now().toString(),
-      userId: currentUser.id,
-      userName: currentUser.name,
-      type,
-      timestamp: new Date(),
-    };
-    setLogs([newEntry, ...logs]);
+    const timestamp = new Date().toISOString();
 
-    // Update user state based on action
-    const newState = { ...userStates };
-    switch (type) {
-      case 'Time In':
-        newState[currentUser.id] = 'logged_in';
-        break;
-      case 'Break':
-        newState[currentUser.id] = 'on_break';
-        break;
-      case 'Return':
-        newState[currentUser.id] = 'logged_in';
-        break;
-      case 'Time Out':
-        newState[currentUser.id] = 'logged_out';
-        break;
+    try {
+      const headers: Record<string, string> = {
+        'Content-Type': 'application/json',
+        ...getAuthHeaders(),
+      };
+      const res = await fetch(`${API_BASE}/time-entries`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({
+          event_type: type,
+          timestamp,
+          project: null,
+          description: null,
+          duration_minutes: null,
+        }),
+      });
+      if (!res.ok) {
+        const errorData = await res.json();
+        throw new Error(errorData?.error || 'Unable to save log');
+      }
+
+      const saved = await res.json();
+      const newEntry: LogEntry = {
+        id: String(saved.id),
+        userId: String(saved.user_id),
+        userName: saved.userName || currentUser.name,
+        type,
+        timestamp: new Date(saved.timestamp),
+      };
+      setLogs((prevLogs) => [newEntry, ...prevLogs]);
+
+      const newState = { ...userStates };
+      switch (type) {
+        case 'Time In':
+          newState[currentUser.id] = 'logged_in';
+          break;
+        case 'Break':
+          newState[currentUser.id] = 'on_break';
+          break;
+        case 'Return':
+          newState[currentUser.id] = 'logged_in';
+          break;
+        case 'Time Out':
+          newState[currentUser.id] = 'logged_out';
+          break;
+      }
+      setUserStates(newState);
+    } catch (err) {
+      console.error('Unable to save log:', err);
+      alert('Unable to save the event. Please try again.');
     }
-    setUserStates(newState);
   };
 
   const isButtonEnabled = (buttonType: LogEntry['type']): boolean => {
@@ -304,7 +478,7 @@ export default function App() {
         const error = await res.json();
         throw new Error(error?.error || 'Unable to add user');
       }
-      const newUser = await res.json();
+      const newUser = normalizeUser(await res.json());
       setUsers([...users, newUser]);
       setNewUserName('');
       setNewAccessCode('');
@@ -342,7 +516,7 @@ export default function App() {
         const error = await res.json();
         throw new Error(error?.error || 'Unable to update user');
       }
-      const updatedUser = await res.json();
+      const updatedUser = normalizeUser(await res.json());
       setUsers(users.map(u => (u.id === userId ? updatedUser : u)));
       setEditingUser(null);
     } catch (err) {
@@ -461,6 +635,10 @@ export default function App() {
           }
           break;
         case 'Time Out':
+          if (currentBreakStart) {
+            breakMinutes += (log.timestamp.getTime() - currentBreakStart.getTime()) / (1000 * 60);
+            currentBreakStart = null;
+          }
           if (currentTimeIn) {
             const sessionMinutes = (log.timestamp.getTime() - currentTimeIn.getTime()) / (1000 * 60);
             const netMinutes = sessionMinutes - breakMinutes;
@@ -468,7 +646,6 @@ export default function App() {
             const dateStr = toLocalDateString(log.timestamp);
             const isWorkingHol = workSchedule.workingHolidays.includes(dateStr);
             if (isWorkingHol) {
-              // All hours worked on a working holiday are overtime
               totalOvertimeMinutes += netMinutes;
             } else {
               const schedEnd = parseScheduleTime(log.timestamp, workSchedule.endTime);
@@ -482,6 +659,27 @@ export default function App() {
           break;
       }
     });
+
+    if (currentTimeIn) {
+      const now = new Date();
+      if (currentBreakStart) {
+        breakMinutes += (now.getTime() - currentBreakStart.getTime()) / (1000 * 60);
+      }
+      const sessionMinutes = (now.getTime() - currentTimeIn.getTime()) / (1000 * 60);
+      const netMinutes = sessionMinutes - breakMinutes;
+      totalMinutes += netMinutes;
+
+      const dateStr = toLocalDateString(now);
+      const isWorkingHol = workSchedule.workingHolidays.includes(dateStr);
+      if (isWorkingHol) {
+        totalOvertimeMinutes += netMinutes;
+      } else {
+        const schedEnd = parseScheduleTime(now, workSchedule.endTime);
+        if (now.getTime() > schedEnd.getTime()) {
+          totalOvertimeMinutes += (now.getTime() - schedEnd.getTime()) / (1000 * 60);
+        }
+      }
+    }
 
     return {
       totalWorkHours: totalMinutes / 60,
@@ -502,9 +700,10 @@ export default function App() {
 
   const generatePDFReport = (period: 'daily' | 'weekly' | 'monthly') => {
     const { start, end } = getDateRange(period);
-    let filteredLogs = logs.filter(
-      log => log.timestamp >= start && log.timestamp <= end
-    );
+    let filteredLogs = logs.filter((log) => {
+      const timestamp = new Date(log.timestamp);
+      return timestamp >= start && timestamp <= end;
+    });
 
     // If regular user, only show their own logs
     if (currentUser && currentUser.role === 'user') {
@@ -1229,10 +1428,15 @@ export default function App() {
           </div>
 
           <div className="border-t pt-6">
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-gray-700">
-                {currentUser.role === 'super_admin' || currentUser.role === 'admin' ? 'All Activity Logs' : 'My Activity Log'}
-              </h2>
+            <div className="flex items-center justify-between mb-4 flex-wrap gap-4">
+              <div>
+                <h2 className="text-gray-700">
+                  {currentUser.role === 'super_admin' || currentUser.role === 'admin' ? 'All Activity Logs' : 'My Activity Log'}
+                </h2>
+                <p className="text-sm text-gray-500">
+                  Total displayed hours: {formatHours(calculateWorkHours((currentUser.role === 'super_admin' || currentUser.role === 'admin') ? logs : logs.filter(log => log.userId === currentUser.id)))}
+                </p>
+              </div>
               {currentUser.role === 'user' && (() => {
                 const todayStr = toLocalDateString(new Date());
                 const todayLogs = logs.filter(log =>
